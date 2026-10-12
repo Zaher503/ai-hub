@@ -181,7 +181,10 @@ async def transcribe(request: Request):
     job = Job("whisper", "transcribe", model, _priority(request), request.headers.get("x-client", ""),
               float(audio) if audio else None, request.headers.get("x-queue-ticket"))
     headers = {k: v for k, v in request.headers.items() if k.lower() not in HOP}
-    upstream = http.build_request("POST", f"{WHISPER}/v1/audio/transcriptions", content=request.stream(), headers=headers)
+    # Read the upload before waiting in line: polling for a hung-up caller while waiting would otherwise
+    # swallow the body that is still arriving
+    audio_bytes = await request.body()
+    upstream = http.build_request("POST", f"{WHISPER}/v1/audio/transcriptions", content=audio_bytes, headers=headers)
     return await _run_queued(request, job, upstream)
 
 

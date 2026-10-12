@@ -98,3 +98,13 @@ async def test_whisper_goes_through_the_queue_and_frees_ollama(client):
     assert r.json()["text"] == "hello"
     assert "GET /api/ps" in calls  # Ollama was checked and unloaded before Whisper ran
     assert json.loads(json.dumps(main.sched.snapshot()))["resident"]["backend"] == "whisper"
+
+
+async def test_whisper_waits_behind_a_running_chat(client):
+    delay["chat"] = 0.3
+    chat = asyncio.create_task(client.post("/api/chat", json={"model": "gemma", "messages": []}))
+    await asyncio.sleep(0.05)
+    stt = asyncio.create_task(client.post("/v1/audio/transcriptions", content=b"audio" * 1000, headers={"x-audio-seconds": "30"}))
+    a, b = await asyncio.gather(chat, stt)
+    assert b.json()["text"] == "hello"
+    assert b.headers["x-queue-position"] == "1"
