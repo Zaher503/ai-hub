@@ -1,0 +1,69 @@
+name: CD
+
+# After CI passes on main: publish the images to GHCR, then update the stack on the Zephyrus
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [gateway, whisper]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image }}
+          push: true
+          tags: |
+            ghcr.io/zaher503/ai-hub-${{ matrix.image }}:latest
+            ghcr.io/zaher503/ai-hub-${{ matrix.image }}:${{ env.SHA }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+
+  deploy:
+    needs: publish
+    # Self-hosted runner on the Zephyrus; only ever triggered from main, never from pull requests
+    runs-on: [self-hosted, ai-hub]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SHA }}
+      - name: Update the stack
+        run: |
+          install -d /opt/ai-hub
+          cp compose.yaml /opt/ai-hub/compose.yaml
+          cd /opt/ai-hub
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+          docker compose pull gateway whisper
+          docker compose up -d
+          docker image prune -f
+      - name: Health check
+        run: |
+          for i in $(seq 1 40); do
+            curl -fsS http://127.0.0.1:11434/healthz && exit 0
+            sleep 3
+          done
+          docker compose -f /opt/ai-hub/compose.yaml logs --tail 50 gateway
+          exit 1

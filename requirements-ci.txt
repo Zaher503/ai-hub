@@ -1,0 +1,4 @@
+-r gateway/app/requirements.txt
+pytest
+pytest-asyncio
+ruff
